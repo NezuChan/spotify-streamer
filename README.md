@@ -35,11 +35,26 @@ cd spotify-streamer
 go build -o spotify-streamer ./cmd/server
 ```
 
-### Using Docker (coming soon)
+### Using Docker
 
 ```bash
 docker pull ghcr.io/nezuchan/spotify-streamer:latest
 ```
+
+Or with docker-compose:
+
+```bash
+# Create config.yaml from example
+cp config.example.yaml config.yaml
+# Edit config.yaml with your settings
+
+# Start the service
+docker-compose up -d
+```
+
+### Pre-built Binaries
+
+Download pre-built binaries from the [Releases](https://github.com/NezuChan/spotify-streamer/releases) page.
 
 ## Configuration
 
