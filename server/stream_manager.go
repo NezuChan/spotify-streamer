@@ -3,13 +3,16 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/nezuchan/spotify-streamer/config"
 	"github.com/sirupsen/logrus"
+	librespot "github.com/devgianlu/go-librespot"
 )
 
 // StreamData holds cached audio stream data
@@ -147,26 +150,94 @@ func (sm *StreamManager) downloadTrack(ctx context.Context, trackID string, stre
 		return
 	}
 
-	// Create Spotify URI
-	_ = fmt.Sprintf("spotify:track:%s", trackID)
+	// Parse track ID to SpotifyId
+	spotifyId, err := librespot.SpotifyIdFromBase62(librespot.SpotifyIdTypeTrack, trackID)
+	if err != nil {
+		stream.err = fmt.Errorf("invalid track ID: %w", err)
+		logger.WithError(err).Error("Failed to parse track ID")
+		return
+	}
+
+	logger.Debug("Creating player stream")
 	
-	// TODO: Implement actual audio streaming
-	// The go-librespot player API needs to be used to:
-	// 1. Load the track using player methods
-	// 2. Capture audio output (OGG Vorbis format)
-	// 3. Write to stream.buffer
-	//
-	// This requires deeper integration with go-librespot's player architecture
-	// which is designed for live playback, not downloading
+	// Create HTTP client for player
+	httpClient := &http.Client{Timeout: 30 * time.Second}
 	
-	stream.err = fmt.Errorf("audio streaming not yet implemented - requires go-librespot player integration")
-	logger.Error("Track download not implemented - this is a framework implementation")
+	// Create player stream - this loads the track and prepares it for playback
+	playerStream, err := player.NewStream(ctx, httpClient, *spotifyId, 320, 0)
+	if err != nil {
+		stream.err = fmt.Errorf("failed to create player stream: %w", err)
+		logger.WithError(err).Error("Failed to create player stream")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"media_name":   playerStream.Media.Name(),
+		"is_track":     playerStream.Media.IsTrack(),
+		"file_format":  playerStream.File.Format,
+	}).Info("Player stream created")
+
+	// Read audio data from the source
+	// AudioSource provides Read([]float32) which gives us raw PCM samples
+	source := playerStream.Source
 	
-	// TODO: Implement actual streaming logic:
-	// 1. Use session.Spclient() to load track metadata
-	// 2. Use player to create audio stream
-	// 3. Read OGG Vorbis data and write to stream.buffer
-	// 4. Handle errors and cleanup
+	// We'll read in chunks and convert to 16-bit PCM
+	const chunkSize = 4096 // samples per channel
+	samples := make([]float32, chunkSize*2) // stereo
+	pcmBuf := make([]byte, chunkSize*2*2) // 16-bit stereo
+	
+	totalSamples := 0
+	for {
+		select {
+		case <-ctx.Done():
+			stream.err = ctx.Err()
+			logger.Warn("Download cancelled")
+			return
+		default:
+		}
+		
+		// Read samples from source
+		n, err := source.Read(samples)
+		if err != nil {
+			if err == io.EOF {
+				logger.WithField("total_samples", totalSamples).Info("Track download complete")
+				break
+			}
+			stream.err = fmt.Errorf("failed to read audio: %w", err)
+			logger.WithError(err).Error("Failed to read audio samples")
+			return
+		}
+		
+		if n == 0 {
+			break
+		}
+		
+		totalSamples += n
+		
+		// Convert float32 samples to 16-bit PCM
+		for i := 0; i < n; i++ {
+			sample := int16(samples[i] * 32767)
+			binary.LittleEndian.PutUint16(pcmBuf[i*2:], uint16(sample))
+		}
+		
+		// Write to buffer
+		if _, err := stream.buffer.Write(pcmBuf[:n*2]); err != nil {
+			stream.err = fmt.Errorf("failed to write to buffer: %w", err)
+			logger.WithError(err).Error("Failed to write to buffer")
+			return
+		}
+		
+		// Log progress every 100k samples (~2 seconds of audio)
+		if totalSamples%100000 == 0 {
+			logger.WithField("samples", totalSamples).Debug("Download progress")
+		}
+	}
+	
+	logger.WithFields(logrus.Fields{
+		"total_samples": totalSamples,
+		"buffer_size": stream.buffer.Len(),
+		"duration_seconds": totalSamples / 44100 / 2, // 44.1kHz stereo
+	}).Info("Track downloaded successfully")
 }
 
 // WriteTo writes the stream data to an io.Writer

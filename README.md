@@ -8,8 +8,8 @@ This service provides a REST API for downloading and streaming Spotify tracks as
 
 ## Features
 
-- 🎵 Stream Spotify tracks as OGG Vorbis
-- 📊 Get track metadata (title, artist, album, duration, artwork)
+- 🎵 Stream Spotify tracks as WAV (PCM audio)
+- 📊 Get track metadata (title, artist, album, duration, artwork) via Spotify Web API
 - 🔍 Search for tracks (coming soon)
 - 💿 Get album and playlist information (coming soon)
 - 💾 In-memory caching for frequently played tracks
@@ -169,10 +169,10 @@ GET /stream/{track_id}
 
 Example:
 ```bash
-curl http://localhost:8080/stream/3n3Ppam7vgaVa1iaRUc9Lp -o track.ogg
+curl http://localhost:8080/stream/3n3Ppam7vgaVa1iaRUc9Lp -o track.wav
 ```
 
-Returns OGG Vorbis audio stream.
+Returns WAV audio stream (16-bit PCM, 44.1kHz, stereo).
 
 #### Search Tracks
 ```http
@@ -243,10 +243,11 @@ spotify-streamer/
 
 ## Known Limitations
 
-- Audio streaming implementation is incomplete and requires further integration with go-librespot's player API
+- Audio is streamed as WAV (PCM) format instead of OGG Vorbis (future enhancement)
 - Search, album, and playlist endpoints are not yet implemented
 - No support for seeking within tracks
 - Requires Spotify Premium account
+- Tracks are fully downloaded before streaming begins (no progressive streaming yet)
 
 ## Contributing
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -143,17 +144,74 @@ func (s *Server) handleTrackMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Implement track metadata fetching using Spotify Web API
-	// For now, return basic information
+	// Use Spotify Web API to get track metadata
+	resp, err := session.WebApi(r.Context(), "GET", fmt.Sprintf("/v1/tracks/%s", trackID), nil, nil, nil)
+	if err != nil {
+		logger.WithError(err).Error("Failed to get track metadata")
+		s.writeError(w, http.StatusInternalServerError, "failed to fetch track metadata", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logger.WithField("status", resp.StatusCode).Error("Spotify API error")
+		s.writeError(w, resp.StatusCode, "spotify api error", fmt.Errorf("status: %d", resp.StatusCode))
+		return
+	}
+
+	// Parse the response
+	var spotifyTrack struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		DurationMs int64  `json:"duration_ms"`
+		URI        string `json:"uri"`
+		ExternalURLs struct {
+			Spotify string `json:"spotify"`
+		} `json:"external_urls"`
+		Album struct {
+			Name   string `json:"name"`
+			Images []struct {
+				URL    string `json:"url"`
+				Height int    `json:"height"`
+				Width  int    `json:"width"`
+			} `json:"images"`
+		} `json:"album"`
+		Artists []struct {
+			Name string `json:"name"`
+		} `json:"artists"`
+		ExternalIds struct {
+			ISRC string `json:"isrc"`
+		} `json:"external_ids"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&spotifyTrack); err != nil {
+		logger.WithError(err).Error("Failed to parse track metadata")
+		s.writeError(w, http.StatusInternalServerError, "failed to parse metadata", err)
+		return
+	}
+
+	// Build response
+	artists := make([]string, len(spotifyTrack.Artists))
+	for i, artist := range spotifyTrack.Artists {
+		artists[i] = artist.Name
+	}
+
+	var artwork string
+	if len(spotifyTrack.Album.Images) > 0 {
+		artwork = spotifyTrack.Album.Images[0].URL
+	}
+
 	response := models.TrackResponse{
 		ID:       trackID,
-		Title:    "Track " + trackID,
-		Artist:   "Unknown Artist",
-		Artists:  []string{"Unknown Artist"},
-		Album:    "Unknown Album",
-		Duration: 0,
-		URI:      fmt.Sprintf("spotify:track:%s", trackID),
-		URL:      fmt.Sprintf("https://open.spotify.com/track/%s", trackID),
+		Title:    spotifyTrack.Name,
+		Artist:   spotifyTrack.Artists[0].Name,
+		Artists:  artists,
+		Album:    spotifyTrack.Album.Name,
+		Duration: spotifyTrack.DurationMs,
+		ISRC:     spotifyTrack.ExternalIds.ISRC,
+		URI:      spotifyTrack.URI,
+		URL:      spotifyTrack.ExternalURLs.Spotify,
+		Artwork:  artwork,
 	}
 
 	s.writeJSON(w, http.StatusOK, response)
@@ -182,12 +240,41 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer stream.Release()
 
-	// Set headers
-	w.Header().Set("Content-Type", "audio/ogg")
+	// Get buffer size
+	stream.mu.RLock()
+	dataSize := stream.buffer.Len()
+	stream.mu.RUnlock()
+
+	// Write WAV header
+	// WAV format: RIFF header + fmt chunk + data chunk
+	const sampleRate = 44100
+	const numChannels = 2
+	const bitsPerSample = 16
+	
+	w.Header().Set("Content-Type", "audio/wav")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.Header().Set("Accept-Ranges", "bytes")
 
-	// Stream the data
+	// Write RIFF header
+	w.Write([]byte("RIFF"))
+	binary.Write(w, binary.LittleEndian, uint32(dataSize+36)) // Total size - 8
+	w.Write([]byte("WAVE"))
+
+	// Write fmt chunk
+	w.Write([]byte("fmt "))
+	binary.Write(w, binary.LittleEndian, uint32(16))              // fmt chunk size
+	binary.Write(w, binary.LittleEndian, uint16(1))               // PCM format
+	binary.Write(w, binary.LittleEndian, uint16(numChannels))    // Number of channels
+	binary.Write(w, binary.LittleEndian, uint32(sampleRate))     // Sample rate
+	binary.Write(w, binary.LittleEndian, uint32(sampleRate*numChannels*bitsPerSample/8)) // Byte rate
+	binary.Write(w, binary.LittleEndian, uint16(numChannels*bitsPerSample/8)) // Block align
+	binary.Write(w, binary.LittleEndian, uint16(bitsPerSample))  // Bits per sample
+
+	// Write data chunk
+	w.Write([]byte("data"))
+	binary.Write(w, binary.LittleEndian, uint32(dataSize)) // Data size
+
+	// Stream the audio data
 	logger.Debug("Streaming audio data")
 	if _, err := stream.WriteTo(w); err != nil {
 		logger.WithError(err).Error("Failed to write stream data")
