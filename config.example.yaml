@@ -1,0 +1,23 @@
+server:
+  port: "8080"
+  host: "0.0.0.0"
+
+librespot:
+  device_name: "Spotify-Streamer"
+  device_type: "computer"
+  credentials:
+    type: "interactive"  # Options: "interactive", "stored"
+    username: ""
+    password: ""
+  audio:
+    bitrate: 320  # Options: 96, 160, 320
+    normalisation: true
+    normalisation_pregain: 0  # -5 (quiet), 0 (normal), +3 (loud)
+  state_path: "./state.json"
+
+cache:
+  enabled: true
+  max_tracks: 100
+  ttl: 3600  # seconds (1 hour)
+
+log_level: "info"  # Options: trace, debug, info, warn, error
